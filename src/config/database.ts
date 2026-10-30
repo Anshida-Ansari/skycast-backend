@@ -28,6 +28,7 @@ export const connectDatabase = async (): Promise<void> => {
     });
 
     await mongoose.connect(env.MONGODB_URI, {
+      dbName: 'skycast',
       maxPoolSize: 10,
       minPoolSize: 2,
       serverSelectionTimeoutMS: 5000,

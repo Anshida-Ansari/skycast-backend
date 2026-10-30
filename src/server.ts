@@ -12,9 +12,9 @@ const startServer = async () => {
     // 2. Initialize Express application
     const app = createApp();
 
-    // 3. Start HTTP server
-    const server = app.listen(env.PORT, () => {
-      logger.info(`🚀 SkyCast Backend Server running in [${env.NODE_ENV}] mode on port ${env.PORT}`);
+    // 3. Start HTTP server (explicitly binding to 0.0.0.0 for Render and cloud container hosting)
+    const server = app.listen(env.PORT, '0.0.0.0', () => {
+      logger.info(`🚀 SkyCast Backend Server running in [${env.NODE_ENV}] mode on port ${env.PORT} (0.0.0.0)`);
       logger.info(`🌐 Health check available at: http://localhost:${env.PORT}/api/v1/health`);
     });
 

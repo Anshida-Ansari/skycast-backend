@@ -12,13 +12,56 @@ import { ErrorCodes } from './constants/errorCodes.js';
 export const createApp = (): Application => {
   const app = express();
 
-  // 1. Security HTTP headers
+  // 1. Production Reverse Proxy Trust (Required for Render, Vercel, rate limiting & secure cookies)
+  app.set('trust proxy', 1);
+
+  // 2. Security HTTP headers
   app.use(helmet());
 
-  // 2. CORS configuration
+  // 3. Robust Production & Preview CORS configuration
+  const configuredOrigins = (env.CORS_ORIGIN || '')
+    .split(',')
+    .map((o) => o.trim())
+    .filter(Boolean);
+
+  const localDevOrigins = [
+    'http://localhost:5173',
+    'http://localhost:3000',
+    'http://127.0.0.1:5173',
+    'http://127.0.0.1:3000',
+  ];
+
+  // Specific SkyCast Vercel project preview regex (e.g. skycast-git-feat.vercel.app or skycast.vercel.app)
+  const skycastVercelPattern = /^https:\/\/skycast(-[a-zA-Z0-9_-]+)?\.vercel\.app$/;
+
   app.use(
     cors({
-      origin: [env.CORS_ORIGIN, 'http://localhost:3000', 'http://127.0.0.1:5173'],
+      origin: (requestOrigin, callback) => {
+        // Allow server-to-server, curl, mobile, or Render health check probes with no origin
+        if (!requestOrigin) {
+          return callback(null, true);
+        }
+
+        // Allow configured origins (from env.CORS_ORIGIN)
+        if (configuredOrigins.includes(requestOrigin)) {
+          return callback(null, true);
+        }
+
+        // Allow local development origins
+        if (localDevOrigins.includes(requestOrigin)) {
+          return callback(null, true);
+        }
+
+        // Allow Vercel preview deployments only for the SkyCast project
+        if (skycastVercelPattern.test(requestOrigin)) {
+          return callback(null, true);
+        }
+
+        // Reject other origins
+        return callback(
+          new AppError(`Origin ${requestOrigin} is not allowed by CORS policy`, 403, ErrorCodes.FORBIDDEN)
+        );
+      },
       credentials: true,
       methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
       allowedHeaders: ['Content-Type', 'Authorization'],
