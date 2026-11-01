@@ -14,25 +14,47 @@ import { AppError } from '../errors/AppError.js';
 import { ErrorCodes } from '../constants/errorCodes.js';
 import { logger } from '../utils/logger.js';
 
+const normalizeProviderUrl = (url: string | undefined, defaultUrl: string): string => {
+  if (!url || !url.trim()) return defaultUrl;
+  let clean = url.trim().replace(/\/+$/, '');
+  clean = clean.replace(/\/forecast$/, '').replace(/\/air-quality$/, '').replace(/\/search$/, '');
+  if (!clean.endsWith('/v1')) {
+    clean = `${clean}/v1`;
+  }
+  return clean;
+};
+
 export class OpenMeteoAdapter implements IWeatherProvider {
   private forecastClient: AxiosInstance;
   private geoClient: AxiosInstance;
   private airClient: AxiosInstance;
 
   constructor() {
+    const forecastBase = normalizeProviderUrl(env.OPEN_METEO_BASE_URL, 'https://api.open-meteo.com/v1');
+    const geoBase = normalizeProviderUrl(env.OPEN_METEO_GEO_URL, 'https://geocoding-api.open-meteo.com/v1');
+    const airBase = normalizeProviderUrl(env.OPEN_METEO_AIR_URL, 'https://air-quality-api.open-meteo.com/v1');
+
+    const defaultHeaders = {
+      'User-Agent': 'SkyCast/1.0 (Meteorological-Forecasting-Service; https://github.com/Anshida-Ansari/skycast-backend)',
+      'Accept': 'application/json',
+    };
+
     this.forecastClient = axios.create({
-      baseURL: env.OPEN_METEO_BASE_URL,
-      timeout: 10000,
+      baseURL: forecastBase,
+      timeout: 12000,
+      headers: defaultHeaders,
     });
 
     this.geoClient = axios.create({
-      baseURL: env.OPEN_METEO_GEO_URL,
-      timeout: 10000,
+      baseURL: geoBase,
+      timeout: 12000,
+      headers: defaultHeaders,
     });
 
     this.airClient = axios.create({
-      baseURL: env.OPEN_METEO_AIR_URL,
-      timeout: 10000,
+      baseURL: airBase,
+      timeout: 12000,
+      headers: defaultHeaders,
     });
   }
 
@@ -97,12 +119,14 @@ export class OpenMeteoAdapter implements IWeatherProvider {
         sunset: daily?.sunset?.[0] || '',
         timestamp: current.time,
       };
-    } catch (error) {
-      logger.error('OpenMeteo getCurrentWeather error: %o', error);
+    } catch (error: any) {
+      const reason = error.response?.data?.reason || error.message;
+      logger.error('OpenMeteo getCurrentWeather error [%s]: %o', reason, error.response?.data || error.message);
       throw new AppError(
-        'Failed to fetch current weather data from meteorological provider',
+        `Failed to fetch current weather data from meteorological provider: ${reason}`,
         502,
-        ErrorCodes.WEATHER_PROVIDER_ERROR
+        ErrorCodes.WEATHER_PROVIDER_ERROR,
+        error.response?.data
       );
     }
   }
@@ -154,12 +178,14 @@ export class OpenMeteoAdapter implements IWeatherProvider {
       }
 
       return items;
-    } catch (error) {
-      logger.error('OpenMeteo getHourlyForecast error: %o', error);
+    } catch (error: any) {
+      const reason = error.response?.data?.reason || error.message;
+      logger.error('OpenMeteo getHourlyForecast error [%s]: %o', reason, error.response?.data || error.message);
       throw new AppError(
-        'Failed to fetch hourly forecast from meteorological provider',
+        `Failed to fetch hourly forecast from meteorological provider: ${reason}`,
         502,
-        ErrorCodes.WEATHER_PROVIDER_ERROR
+        ErrorCodes.WEATHER_PROVIDER_ERROR,
+        error.response?.data
       );
     }
   }
@@ -210,12 +236,14 @@ export class OpenMeteoAdapter implements IWeatherProvider {
       }
 
       return items;
-    } catch (error) {
-      logger.error('OpenMeteo getDailyForecast error: %o', error);
+    } catch (error: any) {
+      const reason = error.response?.data?.reason || error.message;
+      logger.error('OpenMeteo getDailyForecast error [%s]: %o', reason, error.response?.data || error.message);
       throw new AppError(
-        'Failed to fetch daily forecast from meteorological provider',
+        `Failed to fetch daily forecast from meteorological provider: ${reason}`,
         502,
-        ErrorCodes.WEATHER_PROVIDER_ERROR
+        ErrorCodes.WEATHER_PROVIDER_ERROR,
+        error.response?.data
       );
     }
   }
