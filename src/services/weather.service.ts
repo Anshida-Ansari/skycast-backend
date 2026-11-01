@@ -1,5 +1,5 @@
 import { IWeatherProvider } from '../integrations/weatherProvider.interface.js';
-import { OpenMeteoAdapter } from '../integrations/openMeteo.adapter.js';
+import { FallbackWeatherProvider } from '../integrations/fallbackWeatherProvider.js';
 import {
   AirQualityData,
   CurrentWeather,
@@ -14,17 +14,28 @@ import { logger } from '../utils/logger.js';
 
 interface CacheEntry<T> {
   data: T;
-  expiresAt: number;
+  freshUntil: number;
+  staleUntil: number;
+}
+
+export interface WeatherServiceResult<T> {
+  data: T;
+  cached: boolean;
+  stale?: boolean;
 }
 
 export class WeatherService {
   private provider: IWeatherProvider;
   private memoryCache: Map<string, CacheEntry<unknown>> = new Map();
+  private inFlightRequests: Map<string, Promise<any>> = new Map();
   private cacheTtlMs: number;
+  private staleTtlMs: number;
 
   constructor(provider?: IWeatherProvider) {
-    this.provider = provider || new OpenMeteoAdapter();
+    this.provider = provider || new FallbackWeatherProvider();
     this.cacheTtlMs = env.CACHE_TTL_MINUTES * 60 * 1000;
+    // Retain cached data for up to 24 hours as an emergency stale fallback
+    this.staleTtlMs = 24 * 60 * 60 * 1000;
   }
 
   /**
@@ -34,99 +45,143 @@ export class WeatherService {
     return Math.round(coord * 100) / 100;
   }
 
-  private getCache<T>(key: string): T | null {
+  private getFreshCache<T>(key: string): T | null {
     const entry = this.memoryCache.get(key);
     if (!entry) return null;
 
-    if (Date.now() > entry.expiresAt) {
-      this.memoryCache.delete(key);
-      return null;
+    if (Date.now() <= entry.freshUntil) {
+      return entry.data as T;
     }
 
-    return entry.data as T;
+    // Clean up if past stale window
+    if (Date.now() > entry.staleUntil) {
+      this.memoryCache.delete(key);
+    }
+
+    return null;
+  }
+
+  private getStaleCache<T>(key: string): T | null {
+    const entry = this.memoryCache.get(key);
+    if (!entry) return null;
+
+    if (Date.now() <= entry.staleUntil) {
+      return entry.data as T;
+    }
+
+    this.memoryCache.delete(key);
+    return null;
   }
 
   private setCache<T>(key: string, data: T): void {
+    const now = Date.now();
     this.memoryCache.set(key, {
       data,
-      expiresAt: Date.now() + this.cacheTtlMs,
+      freshUntil: now + this.cacheTtlMs,
+      staleUntil: now + this.staleTtlMs,
     });
+  }
+
+  /**
+   * Coalesce simultaneous identical requests into a single in-flight promise
+   */
+  private async executeCoalesced<T>(
+    cacheKey: string,
+    fetcher: () => Promise<T>
+  ): Promise<WeatherServiceResult<T>> {
+    // 1. Return fresh cache if available
+    const fresh = this.getFreshCache<T>(cacheKey);
+    if (fresh) {
+      logger.debug('Cache HIT (fresh) for %s', cacheKey);
+      return { data: fresh, cached: true };
+    }
+
+    // 2. Coalesce in-flight requests to avoid concurrent duplicate provider calls
+    let inFlight = this.inFlightRequests.get(cacheKey);
+    if (!inFlight) {
+      inFlight = (async () => {
+        try {
+          const freshData = await fetcher();
+          this.setCache(cacheKey, freshData);
+          return freshData;
+        } finally {
+          this.inFlightRequests.delete(cacheKey);
+        }
+      })();
+
+      this.inFlightRequests.set(cacheKey, inFlight);
+    } else {
+      logger.debug('Coalescing in-flight request for %s', cacheKey);
+    }
+
+    try {
+      const data = await inFlight;
+      return { data, cached: false };
+    } catch (error) {
+      // 3. Stale cache fallback if both providers fail
+      const stale = this.getStaleCache<T>(cacheKey);
+      if (stale) {
+        logger.warn('⚠️ Both weather providers failed. Serving STALE cache fallback for %s', cacheKey);
+        return { data: stale, cached: true, stale: true };
+      }
+
+      throw error;
+    }
   }
 
   async getCurrentWeather(
     rawLat: number,
     rawLon: number,
     units: UnitSystem = 'metric'
-  ): Promise<{ data: CurrentWeather; cached: boolean }> {
+  ): Promise<WeatherServiceResult<CurrentWeather>> {
     const lat = this.normalizeCoordinate(rawLat);
     const lon = this.normalizeCoordinate(rawLon);
     const cacheKey = `current:${lat}:${lon}:${units}`;
 
-    const cachedData = this.getCache<CurrentWeather>(cacheKey);
-    if (cachedData) {
-      logger.debug('Cache hit for %s', cacheKey);
-      return { data: cachedData, cached: true };
-    }
-
-    const data = await this.provider.getCurrentWeather({ latitude: lat, longitude: lon, units });
-    this.setCache(cacheKey, data);
-    return { data, cached: false };
+    return this.executeCoalesced(cacheKey, () =>
+      this.provider.getCurrentWeather({ latitude: lat, longitude: lon, units })
+    );
   }
 
   async getHourlyForecast(
     rawLat: number,
     rawLon: number,
     units: UnitSystem = 'metric'
-  ): Promise<{ data: HourlyForecastItem[]; cached: boolean }> {
+  ): Promise<WeatherServiceResult<HourlyForecastItem[]>> {
     const lat = this.normalizeCoordinate(rawLat);
     const lon = this.normalizeCoordinate(rawLon);
     const cacheKey = `hourly:${lat}:${lon}:${units}`;
 
-    const cachedData = this.getCache<HourlyForecastItem[]>(cacheKey);
-    if (cachedData) {
-      return { data: cachedData, cached: true };
-    }
-
-    const data = await this.provider.getHourlyForecast({ latitude: lat, longitude: lon, units });
-    this.setCache(cacheKey, data);
-    return { data, cached: false };
+    return this.executeCoalesced(cacheKey, () =>
+      this.provider.getHourlyForecast({ latitude: lat, longitude: lon, units })
+    );
   }
 
   async getDailyForecast(
     rawLat: number,
     rawLon: number,
     units: UnitSystem = 'metric'
-  ): Promise<{ data: DailyForecastItem[]; cached: boolean }> {
+  ): Promise<WeatherServiceResult<DailyForecastItem[]>> {
     const lat = this.normalizeCoordinate(rawLat);
     const lon = this.normalizeCoordinate(rawLon);
     const cacheKey = `daily:${lat}:${lon}:${units}`;
 
-    const cachedData = this.getCache<DailyForecastItem[]>(cacheKey);
-    if (cachedData) {
-      return { data: cachedData, cached: true };
-    }
-
-    const data = await this.provider.getDailyForecast({ latitude: lat, longitude: lon, units });
-    this.setCache(cacheKey, data);
-    return { data, cached: false };
+    return this.executeCoalesced(cacheKey, () =>
+      this.provider.getDailyForecast({ latitude: lat, longitude: lon, units })
+    );
   }
 
   async getAirQuality(
     rawLat: number,
     rawLon: number
-  ): Promise<{ data: AirQualityData; cached: boolean }> {
+  ): Promise<WeatherServiceResult<AirQualityData>> {
     const lat = this.normalizeCoordinate(rawLat);
     const lon = this.normalizeCoordinate(rawLon);
     const cacheKey = `aqi:${lat}:${lon}`;
 
-    const cachedData = this.getCache<AirQualityData>(cacheKey);
-    if (cachedData) {
-      return { data: cachedData, cached: true };
-    }
-
-    const data = await this.provider.getAirQuality({ latitude: lat, longitude: lon });
-    this.setCache(cacheKey, data);
-    return { data, cached: false };
+    return this.executeCoalesced(cacheKey, () =>
+      this.provider.getAirQuality({ latitude: lat, longitude: lon })
+    );
   }
 
   async getFullForecast(
@@ -135,48 +190,44 @@ export class WeatherService {
     units: UnitSystem = 'metric',
     city?: string,
     country?: string
-  ): Promise<{ data: FullWeatherResponse; cached: boolean }> {
+  ): Promise<WeatherServiceResult<FullWeatherResponse>> {
     const lat = this.normalizeCoordinate(rawLat);
     const lon = this.normalizeCoordinate(rawLon);
     const cacheKey = `full:${lat}:${lon}:${units}`;
 
-    const cachedData = this.getCache<FullWeatherResponse>(cacheKey);
-    if (cachedData) {
-      return { data: cachedData, cached: true };
-    }
+    return this.executeCoalesced(cacheKey, async () => {
+      // Execute sub-requests concurrently through the provider (with fallback support per domain)
+      const [current, hourly, daily, airQuality, alerts] = await Promise.all([
+        this.provider.getCurrentWeather({ latitude: lat, longitude: lon, units }),
+        this.provider.getHourlyForecast({ latitude: lat, longitude: lon, units }),
+        this.provider.getDailyForecast({ latitude: lat, longitude: lon, units }),
+        this.provider.getAirQuality({ latitude: lat, longitude: lon }),
+        this.provider.getAlerts({ latitude: lat, longitude: lon }),
+      ]);
 
-    // Concurrent execution of independent data sets
-    const [current, hourly, daily, airQuality, alerts] = await Promise.all([
-      this.provider.getCurrentWeather({ latitude: lat, longitude: lon, units }),
-      this.provider.getHourlyForecast({ latitude: lat, longitude: lon, units }),
-      this.provider.getDailyForecast({ latitude: lat, longitude: lon, units }),
-      this.provider.getAirQuality({ latitude: lat, longitude: lon }),
-      this.provider.getAlerts({ latitude: lat, longitude: lon }),
-    ]);
+      const result: FullWeatherResponse = {
+        location: {
+          latitude: lat,
+          longitude: lon,
+          timezone: 'auto',
+          city,
+          country,
+        },
+        units,
+        current,
+        hourly,
+        daily,
+        airQuality,
+        alerts,
+      };
 
-    const result: FullWeatherResponse = {
-      location: {
-        latitude: lat,
-        longitude: lon,
-        timezone: 'auto',
-        city,
-        country,
-      },
-      units,
-      current,
-      hourly,
-      daily,
-      airQuality,
-      alerts,
-    };
-
-    this.setCache(cacheKey, result);
-    return { data: result, cached: false };
+      return result;
+    });
   }
 
   async searchLocations(query: string): Promise<GeocodingLocation[]> {
     const cacheKey = `search:${query.toLowerCase().trim()}`;
-    const cachedData = this.getCache<GeocodingLocation[]>(cacheKey);
+    const cachedData = this.getFreshCache<GeocodingLocation[]>(cacheKey);
     if (cachedData) {
       return cachedData;
     }
@@ -188,4 +239,3 @@ export class WeatherService {
 }
 
 export const weatherService = new WeatherService();
-

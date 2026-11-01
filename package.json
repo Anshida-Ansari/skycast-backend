@@ -7,7 +7,8 @@
     "build": "rimraf dist && tsc",
     "start": "node dist/server.js",
     "dev": "tsx watch src/server.ts",
-    "test:phase3": "tsx tests/phase3.test.ts"
+    "test:phase3": "tsx tests/phase3.test.ts",
+    "test:fallback": "tsx tests/weatherFallback.test.ts"
   },
   "keywords": [
     "weather",

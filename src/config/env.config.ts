@@ -13,6 +13,8 @@ const envSchema = z.object({
   OPEN_METEO_BASE_URL: z.string().url().default('https://api.open-meteo.com/v1'),
   OPEN_METEO_GEO_URL: z.string().url().default('https://geocoding-api.open-meteo.com/v1'),
   OPEN_METEO_AIR_URL: z.string().url().default('https://air-quality-api.open-meteo.com/v1'),
+  WEATHERAPI_KEY: z.string().optional(),
+  WEATHERAPI_BASE_URL: z.string().url().default('https://api.weatherapi.com/v1'),
   CACHE_TTL_MINUTES: z.string().default('15').transform((val) => parseInt(val, 10)),
 });
 

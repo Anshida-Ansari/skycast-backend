@@ -11,7 +11,7 @@ export class WeatherController {
       const units = (req.query.units as UnitSystem) || 'metric';
 
       const result = await weatherService.getCurrentWeather(lat, lon, units);
-      sendSuccess(res, result.data, 200, { cached: result.cached });
+      sendSuccess(res, result.data, 200, { cached: result.cached, ...(result.stale ? { stale: true } : {}) });
     } catch (error) {
       next(error);
     }
@@ -24,7 +24,7 @@ export class WeatherController {
       const units = (req.query.units as UnitSystem) || 'metric';
 
       const result = await weatherService.getHourlyForecast(lat, lon, units);
-      sendSuccess(res, result.data, 200, { cached: result.cached });
+      sendSuccess(res, result.data, 200, { cached: result.cached, ...(result.stale ? { stale: true } : {}) });
     } catch (error) {
       next(error);
     }
@@ -37,7 +37,7 @@ export class WeatherController {
       const units = (req.query.units as UnitSystem) || 'metric';
 
       const result = await weatherService.getDailyForecast(lat, lon, units);
-      sendSuccess(res, result.data, 200, { cached: result.cached });
+      sendSuccess(res, result.data, 200, { cached: result.cached, ...(result.stale ? { stale: true } : {}) });
     } catch (error) {
       next(error);
     }
@@ -49,7 +49,7 @@ export class WeatherController {
       const lon = parseFloat(req.query.lon as string);
 
       const result = await weatherService.getAirQuality(lat, lon);
-      sendSuccess(res, result.data, 200, { cached: result.cached });
+      sendSuccess(res, result.data, 200, { cached: result.cached, ...(result.stale ? { stale: true } : {}) });
     } catch (error) {
       next(error);
     }
@@ -64,7 +64,7 @@ export class WeatherController {
       const country = req.query.country as string | undefined;
 
       const result = await weatherService.getFullForecast(lat, lon, units, city, country);
-      sendSuccess(res, result.data, 200, { cached: result.cached });
+      sendSuccess(res, result.data, 200, { cached: result.cached, ...(result.stale ? { stale: true } : {}) });
     } catch (error) {
       next(error);
     }
